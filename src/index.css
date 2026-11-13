@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Bricolage Grotesque", system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --color-pure-white: #FFFFFF;
+  --color-ice-surface: #F6FAFF;
+  --color-light-grey: #E5E9F0;
+  --color-charcoal: #1F2428;
+  --color-charcoal-muted: #525C68;
+
+  --color-soft-blue: #4A90D9;
+  --color-soft-blue-deep: #2563EB;
+  --color-light-blue: #EAF3FE;
+  --color-light-blue-border: #C7DDF6;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    background-color: #FFFFFF;
+    color: #1F2428;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  h1, h2, h3, .font-display {
+    font-family: var(--font-display);
+  }
+}
+
+@keyframes eq-bounce {
+  0%, 100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.eq-bar {
+  transform-origin: bottom;
+  animation: eq-bounce 1.2s ease-in-out infinite;
+}
+
+.eq-bar-2 {
+  animation-delay: 0.2s;
+}
+
+.eq-bar-3 {
+  animation-delay: 0.45s;
+}
+
+.eq-bar-4 {
+  animation-delay: 0.15s;
+}
+
+.eq-bar-5 {
+  animation-delay: 0.35s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eq-bar {
+    animation: none;
+    transform: scaleY(0.7);
+  }
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
