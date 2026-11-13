@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   Check,
@@ -51,6 +51,7 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
     getStoredHighlightResult()
   );
   const [copied, setCopied] = useState(false);
+  const inFlightRef = useRef(false);
 
   useEffect(() => {
     if (!announcer1 && defaultAnnouncerName) {
@@ -126,6 +127,8 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
   };
 
   const generateHighlight = async () => {
+    if (inFlightRef.current || loading) return;
+
     if (!isOnline) {
       setErrorMsg(
         'Koneksi internet diperlukan untuk membuat AI Highlight baru. Naskah yang sudah tersimpan tetap bisa kamu baca dan salin.'
@@ -151,12 +154,14 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
       return;
     }
 
+    inFlightRef.current = true;
     setLoading(true);
     setErrorMsg(null);
 
     try {
       const response = await fetch('/api/ai/highlight', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           newsUrl: trimmedUrl,
@@ -176,7 +181,7 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
         setErrorMsg(
           parsed.data?.error ||
             parsed.fallbackError ||
-            'Waduh, gagal memproses beritanya. Klik Coba Lagi ya.'
+            'Gagal memproses berita menjadi Highlight. Silakan klik Coba Lagi.'
         );
         return;
       }
@@ -201,6 +206,7 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
         'Koneksi ke server terganggu atau terputus. Cek internet kamu lalu klik Coba Lagi ya.'
       );
     } finally {
+      inFlightRef.current = false;
       setLoading(false);
     }
   };
@@ -467,7 +473,7 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
       </form>
 
       {/* Right: Highlight Result Card */}
-      <div className="lg:col-span-7">
+      <div className="lg:col-span-7 space-y-4">
         {loading && (
           <div className="rounded-3xl bg-white border border-[#E5E9F0] shadow-xs p-6 sm:p-8 space-y-5">
             <div className="flex items-center gap-3">
@@ -523,7 +529,7 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
           </div>
         )}
 
-        {!loading && result && (
+        {result && (
           <div className="rounded-3xl bg-white border border-[#E5E9F0] shadow-xs p-5 sm:p-7 space-y-5">
             {result.isDemo && (
               <div className="p-3.5 rounded-2xl bg-[#F6FAFF] border border-[#C7DDF6] flex items-start gap-2.5 text-xs sm:text-sm text-[#1E3A5F]">
@@ -651,7 +657,7 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
               <button
                 type="button"
                 onClick={() => void generateHighlight()}
-                disabled={!isOnline}
+                disabled={!isOnline || loading}
                 className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#F1F5F9] hover:bg-[#E2E8F0] disabled:opacity-50 text-xs sm:text-sm font-semibold text-[#1F2428] min-h-[44px] whitespace-nowrap"
               >
                 <RefreshCw className="w-4 h-4 text-[#2B6CB0]" />

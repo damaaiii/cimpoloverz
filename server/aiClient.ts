@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import { type GenerateContentResponse, GoogleGenAI } from '@google/genai';
 
 export const GEMINI_MODEL = 'gemini-4-hydrogen';
 
@@ -7,6 +7,8 @@ export type AIErrorCode =
   | 'INVALID_API_KEY'
   | 'QUOTA_EXCEEDED'
   | 'MODEL_NOT_FOUND'
+  | 'SAFETY_BLOCK'
+  | 'TOKEN_LIMIT'
   | 'TIMEOUT'
   | 'EMPTY_RESPONSE'
   | 'PARSE_ERROR'
@@ -34,7 +36,7 @@ export function getGenAI(): GoogleGenAI {
   const apiKey = getRawApiKey();
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
     throw Object.assign(new Error('GEMINI_API_KEY belum terkonfigurasi di server.'), {
-      status: 401,
+      status: 500,
       aiCode: 'MISSING_API_KEY' as AIErrorCode,
     });
   }
@@ -46,6 +48,54 @@ export function getGenAI(): GoogleGenAI {
       },
     },
   });
+}
+
+export function inspectGeminiResponse(
+  response: GenerateContentResponse,
+  featureLabel: 'AI Highlight' | 'AI Script'
+): {
+  text: string;
+  finishReason: string | undefined;
+  blockReason: string | undefined;
+  isTruncated: boolean;
+} {
+  const candidate = response.candidates?.[0];
+  const finishReason = candidate?.finishReason ? String(candidate.finishReason) : undefined;
+  const blockReason = response.promptFeedback?.blockReason
+    ? String(response.promptFeedback.blockReason)
+    : undefined;
+  const text = typeof response.text === 'string' ? response.text.trim() : '';
+
+  console.log(`[${featureLabel}] AI Response status:`, {
+    finishReason: finishReason || 'UNKNOWN',
+    blockReason: blockReason || null,
+    responseType: typeof response.text,
+    textLength: text.length,
+    candidateCount: response.candidates?.length || 0,
+  });
+
+  if (
+    blockReason ||
+    finishReason === 'SAFETY' ||
+    finishReason === 'PROHIBITED_CONTENT' ||
+    finishReason === 'BLOCKLIST' ||
+    finishReason === 'SPII'
+  ) {
+    throw Object.assign(
+      new Error(`Konten diblokir oleh kebijakan keamanan AI (${blockReason || finishReason}).`),
+      {
+        status: 422,
+        aiCode: 'SAFETY_BLOCK' as AIErrorCode,
+      }
+    );
+  }
+
+  return {
+    text,
+    finishReason,
+    blockReason,
+    isTruncated: finishReason === 'MAX_TOKENS',
+  };
 }
 
 export function classifyGeminiError(
@@ -62,7 +112,7 @@ export function classifyGeminiError(
     err instanceof Error ? err.message : String(errObj.message || err || 'Unknown error');
   const lowerMsg = rawMsg.toLowerCase();
 
-  console.error(`[${featureLabel}]`, {
+  console.error(`[${featureLabel}] Provider/Execution Error:`, {
     status: rawStatus || undefined,
     code: explicitCode || undefined,
     name: errName || undefined,
@@ -73,7 +123,28 @@ export function classifyGeminiError(
     return {
       httpStatus: 500,
       code: 'MISSING_API_KEY',
-      message: 'API key AI belum terpasang di server. Hubungi admin untuk mengecek GEMINI_API_KEY.',
+      message:
+        'API key AI (GEMINI_API_KEY) belum terkonfigurasi di environment server.',
+      retryable: false,
+    };
+  }
+
+  if (explicitCode === 'SAFETY_BLOCK') {
+    return {
+      httpStatus: 422,
+      code: 'SAFETY_BLOCK',
+      message:
+        'Permintaan atau sumber berita terkena filter keamanan AI. Coba gunakan teks atau topik yang berbeda.',
+      retryable: false,
+    };
+  }
+
+  if (explicitCode === 'TOKEN_LIMIT') {
+    return {
+      httpStatus: 502,
+      code: 'TOKEN_LIMIT',
+      message:
+        'Respons AI terpotong karena melewati batas panjang token. Coba ringkas input atau kurangi jumlah/durasi talk.',
       retryable: false,
     };
   }
@@ -82,7 +153,7 @@ export function classifyGeminiError(
     return {
       httpStatus: 502,
       code: 'EMPTY_RESPONSE',
-      message: 'AI mengembalikan hasil kosong. Klik Coba Lagi untuk memproses ulang.',
+      message: 'Model AI mengembalikan respons kosong. Silakan klik Coba Lagi.',
       retryable: true,
     };
   }
@@ -91,7 +162,8 @@ export function classifyGeminiError(
     return {
       httpStatus: 502,
       code: 'PARSE_ERROR',
-      message: 'Format jawaban AI sempat tidak sesuai struktur. Klik Coba Lagi ya.',
+      message:
+        'Format output dari model AI tidak dapat diparsing menjadi struktur naskah. Silakan klik Coba Lagi.',
       retryable: true,
     };
   }
@@ -107,7 +179,8 @@ export function classifyGeminiError(
     return {
       httpStatus: 502,
       code: 'INVALID_API_KEY',
-      message: 'Konfigurasi API key AI ditolak atau tidak memiliki izin. Periksa GEMINI_API_KEY di server.',
+      message:
+        'API key AI ditolak oleh provider (tidak valid atau tidak memiliki izin akses). Periksa GEMINI_API_KEY di server.',
       retryable: false,
     };
   }
@@ -122,19 +195,21 @@ export function classifyGeminiError(
     return {
       httpStatus: 429,
       code: 'QUOTA_EXCEEDED',
-      message: 'Batas permintaan AI sementara penuh (rate limit / kuota). Tunggu sebentar lalu klik Coba Lagi ya.',
+      message:
+        'Batas penggunaan / kuota permintaan AI sementara penuh (429 Rate Limit). Tunggu beberapa detik lalu klik Coba Lagi.',
       retryable: true,
     };
   }
 
   if (
     rawStatus === 404 ||
-    (lowerMsg.includes('model') && (lowerMsg.includes('not found') || lowerMsg.includes('not supported')))
+    (lowerMsg.includes('model') &&
+      (lowerMsg.includes('not found') || lowerMsg.includes('not supported')))
   ) {
     return {
       httpStatus: 502,
       code: 'MODEL_NOT_FOUND',
-      message: `Model AI (${GEMINI_MODEL}) belum tersedia atau tidak didukung endpoint.`,
+      message: `Model AI (${GEMINI_MODEL}) tidak ditemukan atau tidak didukung oleh endpoint API.`,
       retryable: false,
     };
   }
@@ -150,7 +225,7 @@ export function classifyGeminiError(
     return {
       httpStatus: 504,
       code: 'TIMEOUT',
-      message: 'Proses ke layanan AI melebihi batas waktu. Coba lagi sebentar ya.',
+      message: 'Permintaan ke provider AI melebihi batas waktu. Silakan klik Coba Lagi.',
       retryable: true,
     };
   }
@@ -166,7 +241,8 @@ export function classifyGeminiError(
     return {
       httpStatus: 503,
       code: 'NETWORK_ERROR',
-      message: 'Layanan AI atau jaringan server sedang mengalami gangguan sementara. Silakan klik Coba Lagi.',
+      message:
+        'Terjadi gangguan koneksi sementara ke server provider AI. Silakan klik Coba Lagi.',
       retryable: true,
     };
   }
@@ -174,7 +250,7 @@ export function classifyGeminiError(
   return {
     httpStatus: 502,
     code: 'UNKNOWN_ERROR',
-    message: 'Terjadi kendala saat memproses permintaan AI. Silakan klik Coba Lagi.',
+    message: `Gagal memproses permintaan AI: ${rawMsg.slice(0, 140)}`,
     retryable: true,
   };
 }
@@ -207,7 +283,10 @@ export async function withGeminiRetry<T>(
       if (!classified.retryable || attempt >= maxAttempts) {
         throw err;
       }
-      const waitMs = baseDelayMs * attempt;
+      const waitMs =
+        classified.code === 'QUOTA_EXCEEDED'
+          ? Math.max(2500, baseDelayMs * attempt)
+          : baseDelayMs * attempt;
       console.warn(
         `[${options.featureLabel}] Attempt ${attempt} (${classified.code}) retrying in ${waitMs}ms...`
       );
@@ -215,4 +294,34 @@ export async function withGeminiRetry<T>(
     }
   }
   throw lastError;
+}
+
+export function parseJsonSafely<T>(raw: string): T | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch {
+    // Strip markdown code fences if present before attempting full or brace-sliced parse
+    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidate = fenced ? fenced[1].trim() : trimmed;
+    if (fenced) {
+      try {
+        return JSON.parse(candidate) as T;
+      } catch {
+        // continue to brace extraction
+      }
+    }
+    const braceStart = candidate.indexOf('{');
+    const braceEnd = candidate.lastIndexOf('}');
+    if (braceStart !== -1 && braceEnd > braceStart) {
+      try {
+        return JSON.parse(candidate.slice(braceStart, braceEnd + 1)) as T;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
 }

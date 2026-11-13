@@ -156,14 +156,15 @@ export const AIScriptPanel: React.FC<AIScriptPanelProps> = ({
   const [copiedTalkIndex, setCopiedTalkIndex] = useState<number | null>(null);
   const [editingTalkIndex, setEditingTalkIndex] = useState<number | null>(null);
 
+  const [submitting, setSubmitting] = useState(false);
   const clientSessionId = useMemo(() => getClientSessionId(), []);
   const savedJobIdsRef = useRef<Set<string>>(new Set());
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isMountedRef = useRef(true);
+  const inFlightRef = useRef(false);
 
-  const isGenerating = Boolean(
-    activeJobId && (!jobState || isJobStatusActive(jobState.status))
-  );
+  const isGenerating =
+    submitting || Boolean(activeJobId && (!jobState || isJobStatusActive(jobState.status)));
 
   // Sync default announcer name when empty
   useEffect(() => {
@@ -268,7 +269,9 @@ export const AIScriptPanel: React.FC<AIScriptPanelProps> = ({
     async (targetJobId: string) => {
       clearPollTimer();
       try {
-        const response = await fetch(`/api/ai/script/jobs/${encodeURIComponent(targetJobId)}`);
+        const response = await fetch(`/api/ai/script/jobs/${encodeURIComponent(targetJobId)}`, {
+          credentials: 'same-origin',
+        });
         if (!isMountedRef.current) return;
 
         if (response.status === 404) {
@@ -405,7 +408,7 @@ export const AIScriptPanel: React.FC<AIScriptPanelProps> = ({
   };
 
   const generateScript = async () => {
-    if (isGenerating) return;
+    if (inFlightRef.current || isGenerating) return;
 
     if (!isOnline) {
       setErrorMsg(
@@ -442,6 +445,8 @@ export const AIScriptPanel: React.FC<AIScriptPanelProps> = ({
       return;
     }
 
+    inFlightRef.current = true;
+    setSubmitting(true);
     setErrorMsg(null);
     setConnectionLost(false);
     setCancelling(false);
@@ -450,6 +455,7 @@ export const AIScriptPanel: React.FC<AIScriptPanelProps> = ({
     try {
       const response = await fetch('/api/ai/script/jobs', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           clientSessionId,
@@ -473,7 +479,7 @@ export const AIScriptPanel: React.FC<AIScriptPanelProps> = ({
         setErrorMsg(
           parsed.data?.error ||
             parsed.fallbackError ||
-            'Waduh, gagal memulai penyusunan script. Klik Coba Lagi ya.'
+            'Gagal memulai penyusunan script. Silakan klik Coba Lagi ya.'
         );
         return;
       }
@@ -490,6 +496,9 @@ export const AIScriptPanel: React.FC<AIScriptPanelProps> = ({
       void pollJobStatus(payload.jobId);
     } catch {
       setErrorMsg('Koneksi ke server lagi terganggu nih. Cek jaringan kamu lalu klik Coba Lagi.');
+    } finally {
+      inFlightRef.current = false;
+      setSubmitting(false);
     }
   };
 
