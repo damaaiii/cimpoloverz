@@ -19,6 +19,7 @@ import {
   X,
 } from 'lucide-react';
 import { OFFICIAL_PROGRAMS } from '../data/programsData';
+import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import {
   SavedDraft,
   ScriptJobResponse,
@@ -27,7 +28,12 @@ import {
   ScriptSegmentInput,
   ScriptSegmentOutput,
 } from '../types';
+import { parseApiJsonResponse } from '../utils/apiResponse';
 import { copyTextToClipboard, downloadTextFile } from '../utils/exportScript';
+import {
+  loadLatestScriptFromIndexedDB,
+  saveLatestScriptToIndexedDB,
+} from '../utils/offlineDb';
 import {
   getActiveScriptJobId,
   getClientSessionId,
@@ -45,9 +51,9 @@ interface AIScriptPanelProps {
 
 const OFFICIAL_FIVE_TALKS: ScriptSegmentInput[] = [
   { title: 'TOH (Opening)', durationMinutes: 2 },
-  { title: 'Talk 1', durationMinutes: 3 },
-  { title: 'Talk 2', durationMinutes: 3 },
-  { title: 'Talk 3', durationMinutes: 2 },
+  { title: 'Talk 1 — Bridging ke Tema', durationMinutes: 3 },
+  { title: 'Talk 2 — Tema', durationMinutes: 3 },
+  { title: 'Talk 3 — Tema dan Interaksi', durationMinutes: 2 },
   { title: 'Closing', durationMinutes: 1 },
 ];
 
@@ -109,6 +115,7 @@ export const AIScriptPanel: React.FC<AIScriptPanelProps> = ({
   defaultAnnouncerName,
   onSaveDraft,
 }) => {
+  const isOnline = useOnlineStatus();
   const initialForm = useMemo(() => getStoredScriptForm(), []);
 
   const [announcer1, setAnnouncer1] = useState(
@@ -194,10 +201,22 @@ export const AIScriptPanel: React.FC<AIScriptPanelProps> = ({
     showManualText,
   ]);
 
-  // Persist latest valid script result so errors/rerenders never erase prior output
+  // Persist latest valid script result so errors/rerenders/offline never erase prior output
+  useEffect(() => {
+    if (!result) {
+      void loadLatestScriptFromIndexedDB().then((cached) => {
+        if (cached) {
+          setResult(cached);
+          setStoredScriptResult(cached);
+        }
+      });
+    }
+  }, [result]);
+
   useEffect(() => {
     if (result) {
       setStoredScriptResult(result);
+      void saveLatestScriptToIndexedDB(result);
     }
   }, [result]);
 
@@ -220,6 +239,7 @@ export const AIScriptPanel: React.FC<AIScriptPanelProps> = ({
       };
       setResult(completedResult);
       setStoredScriptResult(completedResult);
+      void saveLatestScriptToIndexedDB(completedResult);
       setEditingTalkIndex(null);
       setActiveScriptJobId(null);
       setActiveJobId(null);
@@ -262,9 +282,15 @@ export const AIScriptPanel: React.FC<AIScriptPanelProps> = ({
           return;
         }
 
-        const payload = (await response.json()) as ScriptJobResponse & { error?: string };
+        const parsed = await parseApiJsonResponse<ScriptJobResponse>(response);
         if (!isMountedRef.current) return;
 
+        if (!parsed.data) {
+          setConnectionLost(true);
+          return;
+        }
+
+        const payload = parsed.data;
         setConnectionLost(false);
         setJobState(payload);
 
@@ -381,6 +407,13 @@ export const AIScriptPanel: React.FC<AIScriptPanelProps> = ({
   const generateScript = async () => {
     if (isGenerating) return;
 
+    if (!isOnline) {
+      setErrorMsg(
+        'Koneksi internet diperlukan untuk membuat AI Script baru. Script yang sudah tersimpan tetap bisa kamu baca, edit, dan salin.'
+      );
+      return;
+    }
+
     const p1 = announcer1.trim();
     const p2 = hasSecondAnnouncer ? announcer2.trim() : '';
 
@@ -431,19 +464,21 @@ export const AIScriptPanel: React.FC<AIScriptPanelProps> = ({
         }),
       });
 
-      const payload = (await response.json()) as ScriptJobResponse & {
-        error?: string;
-        code?: string;
-      };
+      const parsed = await parseApiJsonResponse<ScriptJobResponse>(response);
 
-      if (!response.ok) {
-        if (payload.code === 'URL_UNREACHABLE') {
+      if (!parsed.ok || !parsed.data) {
+        if (parsed.data?.code === 'URL_UNREACHABLE') {
           setShowManualText(true);
         }
-        setErrorMsg(payload.error || 'Waduh, gagal memulai penyusunan script. Coba lagi ya.');
+        setErrorMsg(
+          parsed.data?.error ||
+            parsed.fallbackError ||
+            'Waduh, gagal memulai penyusunan script. Klik Coba Lagi ya.'
+        );
         return;
       }
 
+      const payload = parsed.data;
       setJobState(payload);
       if (payload.status === 'completed') {
         applyCompletedJob(payload);
@@ -1174,7 +1209,7 @@ export const AIScriptPanel: React.FC<AIScriptPanelProps> = ({
                         </span>
                       </div>
                       {isUnderTarget && (
-                        <p className="text-[11px] font-medium text-[#B91C1C]">
+                        <p className="text-[11px] font-medium text-[#2B6CB0]">
                           Perkiraan durasi baca ({estMinutes} mnt / {wordCount} kata) masih di bawah target {targetMinutes} mnt — kamu bisa klik Edit Talk atau Regenerate.
                         </p>
                       )}

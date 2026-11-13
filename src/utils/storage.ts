@@ -1,4 +1,4 @@
-import { SavedDraft, ScriptResult, ScriptSegmentInput } from '../types';
+import { HighlightResult, SavedDraft, ScriptResult, ScriptSegmentInput } from '../types';
 
 const KEYS = {
   ANNOUNCER_NAME: 'cimpo_loverz_announcer_name',
@@ -7,6 +7,7 @@ const KEYS = {
   ACTIVE_SCRIPT_JOB_ID: 'cimpo_loverz_active_script_job_id',
   STORED_SCRIPT_RESULT: 'cimpo_loverz_stored_script_result',
   STORED_SCRIPT_FORM: 'cimpo_loverz_stored_script_form',
+  STORED_HIGHLIGHT_RESULT: 'cimpo_loverz_stored_highlight_result',
 };
 
 export interface StoredScriptFormState {
@@ -48,24 +49,24 @@ export function getSavedDrafts(): SavedDraft[] {
   }
 }
 
-export function saveDraftToStorage(draft: SavedDraft): SavedDraft[] {
-  const existing = getSavedDrafts().filter((item) => item.id !== draft.id);
-  const updated = [draft, ...existing].slice(0, 8);
+export function setSavedDraftsInStorage(drafts: SavedDraft[]): void {
   try {
-    localStorage.setItem(KEYS.SAVED_DRAFTS, JSON.stringify(updated));
+    localStorage.setItem(KEYS.SAVED_DRAFTS, JSON.stringify(drafts.slice(0, 12)));
   } catch {
     // ignore
   }
+}
+
+export function saveDraftToStorage(draft: SavedDraft): SavedDraft[] {
+  const existing = getSavedDrafts().filter((item) => item.id !== draft.id);
+  const updated = [draft, ...existing].slice(0, 12);
+  setSavedDraftsInStorage(updated);
   return updated;
 }
 
 export function deleteDraftFromStorage(id: string): SavedDraft[] {
   const updated = getSavedDrafts().filter((item) => item.id !== id);
-  try {
-    localStorage.setItem(KEYS.SAVED_DRAFTS, JSON.stringify(updated));
-  } catch {
-    // ignore
-  }
+  setSavedDraftsInStorage(updated);
   return updated;
 }
 
@@ -119,6 +120,27 @@ export function setStoredScriptResult(result: ScriptResult | null): void {
       localStorage.setItem(KEYS.STORED_SCRIPT_RESULT, JSON.stringify(result));
     } else {
       localStorage.removeItem(KEYS.STORED_SCRIPT_RESULT);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function getStoredHighlightResult(): HighlightResult | null {
+  try {
+    const raw = localStorage.getItem(KEYS.STORED_HIGHLIGHT_RESULT);
+    return raw ? (JSON.parse(raw) as HighlightResult) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredHighlightResult(result: HighlightResult | null): void {
+  try {
+    if (result) {
+      localStorage.setItem(KEYS.STORED_HIGHLIGHT_RESULT, JSON.stringify(result));
+    } else {
+      localStorage.removeItem(KEYS.STORED_HIGHLIGHT_RESULT);
     }
   } catch {
     // ignore

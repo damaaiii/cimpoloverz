@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { OFFICIAL_PROGRAMS } from '../data/programsData';
 import { AIStudioMode, NavTab, SavedDraft } from '../types';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface HomePageProps {
   announcerName: string;
@@ -89,7 +90,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                 <p className="text-sm sm:text-base text-[#525C68] leading-relaxed">
                   Teman setia Crew SIMFONI sebelum masuk ruang siar! Kepoin flowchart{' '}
                   {OFFICIAL_PROGRAMS.length} program, sulap link berita jadi highlight, atau bikin
-                  script seru buat menyapa Sobat Siar bareng AI Studio.
+                  script seru buat menyapa Sobat Muda bareng AI Studio.
                 </p>
               </div>
             </div>
@@ -110,8 +111,10 @@ export const HomePage: React.FC<HomePageProps> = ({
                 className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-2xl bg-[#F6FAFF] border border-[#C7DDF6] text-[#1E4E8C] text-sm font-semibold hover:bg-[#EAF3FE] active:scale-[0.98] transition-all min-h-[46px] whitespace-nowrap"
               >
                 <Radio className="w-4 h-4 text-[#2B6CB0]" />
-                <span>Cek Program & Flowchart</span>
+                <span>Cek Program &amp; Flowchart</span>
               </button>
+
+              <PWAInstallButton />
 
               {!editingName ? (
                 <button
@@ -313,7 +316,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                   AI Script
                 </h3>
                 <p className="text-sm text-[#425466] leading-relaxed">
-                  Bikin script talk santai buat menyapa Sobat Siar lengkap per segmen dan bisa langsung kamu edit.
+                  Bikin script talk santai buat menyapa Sobat Muda lengkap per segmen dan bisa langsung kamu edit.
                 </p>
               </div>
             </button>

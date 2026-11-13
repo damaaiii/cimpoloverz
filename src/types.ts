@@ -17,6 +17,7 @@ export interface HighlightResult {
   closerLine?: string;
   dialogue: DialogueLine[];
   dialogue2?: DialogueLine[];
+  needsSecondSource?: boolean;
   rawText?: string;
 }
 

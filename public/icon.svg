@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#2B6CB0" />
+  <circle cx="256" cy="256" r="196" fill="#1E5494" opacity="0.45" />
+  <!-- Radio broadcast arcs -->
+  <path
+    d="M150 320 C115 274 115 210 150 164"
+    stroke="#BFDBFE"
+    stroke-width="20"
+    stroke-linecap="round"
+  />
+  <path
+    d="M362 320 C397 274 397 210 362 164"
+    stroke="#BFDBFE"
+    stroke-width="20"
+    stroke-linecap="round"
+  />
+  <path
+    d="M188 292 C168 264 168 220 188 192"
+    stroke="#FFFFFF"
+    stroke-width="18"
+    stroke-linecap="round"
+    opacity="0.9"
+  />
+  <path
+    d="M324 292 C344 264 344 220 324 192"
+    stroke="#FFFFFF"
+    stroke-width="18"
+    stroke-linecap="round"
+    opacity="0.9"
+  />
+  <!-- Studio microphone capsule -->
+  <rect x="224" y="152" width="64" height="120" rx="32" fill="#FFFFFF" />
+  <path
+    d="M204 244 C204 276 226 298 256 298 C286 298 308 276 308 244"
+    stroke="#FFFFFF"
+    stroke-width="18"
+    stroke-linecap="round"
+  />
+  <line
+    x1="256"
+    y1="298"
+    x2="256"
+    y2="346"
+    stroke="#FFFFFF"
+    stroke-width="18"
+    stroke-linecap="round"
+  />
+  <line
+    x1="216"
+    y1="352"
+    x2="296"
+    y2="352"
+    stroke="#FFFFFF"
+    stroke-width="18"
+    stroke-linecap="round"
+  />
+</svg>

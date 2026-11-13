@@ -11,10 +11,18 @@ import {
   Plus,
   RefreshCw,
   UserPlus,
+  WifiOff,
   X,
 } from 'lucide-react';
+import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { HighlightResult, SavedDraft } from '../types';
+import { parseApiJsonResponse } from '../utils/apiResponse';
 import { copyTextToClipboard, downloadTextFile } from '../utils/exportScript';
+import {
+  loadLatestHighlightFromIndexedDB,
+  saveLatestHighlightToIndexedDB,
+} from '../utils/offlineDb';
+import { getStoredHighlightResult, setStoredHighlightResult } from '../utils/storage';
 
 interface AIHighlightPanelProps {
   defaultAnnouncerName: string;
@@ -25,6 +33,8 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
   defaultAnnouncerName,
   onSaveDraft,
 }) => {
+  const isOnline = useOnlineStatus();
+
   const [newsUrl, setNewsUrl] = useState('');
   const [hasSecondNews, setHasSecondNews] = useState(false);
   const [newsUrl2, setNewsUrl2] = useState('');
@@ -37,7 +47,9 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
 
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [result, setResult] = useState<HighlightResult | null>(null);
+  const [result, setResult] = useState<HighlightResult | null>(() =>
+    getStoredHighlightResult()
+  );
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -46,34 +58,67 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
     }
   }, [defaultAnnouncerName, announcer1]);
 
+  useEffect(() => {
+    if (!result) {
+      void loadLatestHighlightFromIndexedDB().then((cached) => {
+        if (cached) {
+          setResult(cached);
+          setStoredHighlightResult(cached);
+        }
+      });
+    }
+  }, [result]);
+
+  useEffect(() => {
+    if (result) {
+      setStoredHighlightResult(result);
+      void saveLatestHighlightToIndexedDB(result);
+    }
+  }, [result]);
+
   const formatHighlightAsText = (data: HighlightResult): string => {
     const lines: string[] = [];
 
+    // 1. Judul Berita 2 (jika ada berita ke-2)
     if (data.title2) {
-      lines.push(`[TEASER BERITA 2] ${data.title2}`);
+      lines.push(data.title2);
+      lines.push('');
     }
+
+    // 2. Kalimat pembuka paten
     if (data.openerLine) {
       lines.push(data.openerLine);
       lines.push('');
     }
-    lines.push(`JUDUL BERITA 1: ${data.title}`);
-    lines.push(`SUMBER: ${data.source}`);
+
+    // 3. Judul Berita 1
+    lines.push(data.title);
     lines.push('');
+
+    // 4. Isi Berita 1
+    const showSpeaker1 = data.dialogue.length > 1;
     lines.push(
-      ...data.dialogue.map((turn) => `${turn.speaker.toUpperCase()}:\n${turn.text}\n`)
+      ...data.dialogue.map((turn) =>
+        showSpeaker1 ? `${turn.speaker.toUpperCase()}: ${turn.text.trim()}` : turn.text.trim()
+      )
     );
 
+    // 5 & 6. Jeda "---" dan Isi Berita 2 (jika ada)
     if (data.dialogue2 && data.dialogue2.length > 0) {
-      lines.push('—');
-      if (data.title2) {
-        lines.push(`JUDUL BERITA 2: ${data.title2}`);
-      }
+      lines.push('');
+      lines.push('---');
+      lines.push('');
+      const showSpeaker2 = data.dialogue2.length > 1;
       lines.push(
-        ...data.dialogue2.map((turn) => `${turn.speaker.toUpperCase()}:\n${turn.text}\n`)
+        ...data.dialogue2.map((turn) =>
+          showSpeaker2 ? `${turn.speaker.toUpperCase()}: ${turn.text.trim()}` : turn.text.trim()
+        )
       );
     }
 
+    // 7. Kalimat penutup paten
     if (data.closerLine) {
+      lines.push('');
       lines.push(data.closerLine);
     }
 
@@ -81,13 +126,20 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
   };
 
   const generateHighlight = async () => {
+    if (!isOnline) {
+      setErrorMsg(
+        'Koneksi internet diperlukan untuk membuat AI Highlight baru. Naskah yang sudah tersimpan tetap bisa kamu baca dan salin.'
+      );
+      return;
+    }
+
     const trimmedUrl = newsUrl.trim();
     const trimmedUrl2 = hasSecondNews ? newsUrl2.trim() : '';
     const p1 = announcer1.trim();
     const p2 = hasSecondAnnouncer ? announcer2.trim() : '';
 
     if (!trimmedUrl && articleText.trim().length < 40) {
-      setErrorMsg('Tempel link beritanya dulu di sini, ya!');
+      setErrorMsg('Tempel link beritanya atau isi teks berita 1 minimal 40 karakter dulu, ya!');
       return;
     }
     if (!p1) {
@@ -115,20 +167,25 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
         }),
       });
 
-      const payload = (await response.json()) as HighlightResult & {
-        error?: string;
-        code?: string;
-      };
+      const parsed = await parseApiJsonResponse<HighlightResult>(response);
 
-      if (!response.ok) {
-        if (payload.code === 'URL_UNREACHABLE') {
+      if (!parsed.ok || !parsed.data) {
+        if (parsed.data?.code === 'URL_UNREACHABLE') {
           setShowManualText(true);
         }
-        setErrorMsg(payload.error || 'Waduh, gagal memproses beritanya. Coba lagi ya.');
+        setErrorMsg(
+          parsed.data?.error ||
+            parsed.fallbackError ||
+            'Waduh, gagal memproses beritanya. Klik Coba Lagi ya.'
+        );
         return;
       }
 
+      const payload = parsed.data;
       setResult(payload);
+      setStoredHighlightResult(payload);
+      void saveLatestHighlightToIndexedDB(payload);
+
       onSaveDraft({
         id: `hl-${Date.now()}`,
         type: 'highlight',
@@ -140,7 +197,9 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
         content: formatHighlightAsText(payload),
       });
     } catch {
-      setErrorMsg('Koneksi ke server lagi terganggu nih. Cek jaringan kamu lalu coba lagi, ya.');
+      setErrorMsg(
+        'Koneksi ke server terganggu atau terputus. Cek internet kamu lalu klik Coba Lagi ya.'
+      );
     } finally {
       setLoading(false);
     }
@@ -180,9 +239,18 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
             AI Highlight Berita
           </h2>
           <p className="text-xs sm:text-sm text-[#3B4C5E] leading-relaxed">
-            Tempel link beritanya di sini, ya! AI bakal rangkumin unsur 5W+1H sepanjang 4–8 baris dengan format siaran SIMFONI.
+            Tempel link beritanya di sini, ya! AI bakal rangkumin fakta 5W+1H sepanjang 4–8 baris dengan format resmi Simfoni Highlight buat Sobat Muda.
           </p>
         </div>
+
+        {!isOnline && (
+          <div className="p-3 rounded-2xl bg-white border border-[#C7DDF6] flex items-start gap-2 text-xs text-[#1E3A5F]">
+            <WifiOff className="w-4 h-4 text-[#2B6CB0] shrink-0 mt-0.5" />
+            <span>
+              Koneksi internet lagi offline. Hasil Highlight terakhir di samping masih bisa kamu baca &amp; salin, sementara generate baru butuh internet.
+            </span>
+          </div>
+        )}
 
         {/* 1. Link Berita Utama */}
         <div className="space-y-2">
@@ -360,10 +428,22 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
         {errorMsg && (
           <div
             role="alert"
-            className="p-3.5 rounded-2xl bg-white border border-[#FCA5A5] flex items-start gap-2.5 text-xs sm:text-sm text-[#B91C1C]"
+            className="p-3.5 rounded-2xl bg-white border border-[#FCA5A5] space-y-2.5 text-xs sm:text-sm text-[#B91C1C]"
           >
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-            <span>{errorMsg}</span>
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{errorMsg}</span>
+            </div>
+            {!loading && isOnline && (
+              <button
+                type="button"
+                onClick={() => void generateHighlight()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] text-xs font-semibold text-[#991B1B] min-h-[36px]"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Coba Lagi</span>
+              </button>
+            )}
           </div>
         )}
 
@@ -375,7 +455,7 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
           {loading ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin" />
-              <span>Lagi nyiapin script buat kamu...</span>
+              <span>Lagi nyiapin highlight buat kamu...</span>
             </>
           ) : (
             <>
@@ -397,14 +477,14 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
                 <span className="w-1.5 h-4 rounded-full bg-[#93C5FD] eq-bar eq-bar-3" />
               </div>
               <p className="font-display font-bold text-base text-[#1F2428]">
-                Lagi nyiapin script highlight buat kamu... ✨
+                Lagi nyiapin naskah Simfoni Highlight buat kamu... ✨
               </p>
             </div>
             <div className="space-y-3 animate-pulse">
               <div className="h-5 bg-[#F1F5F9] rounded-xl w-3/4" />
-              <div className="h-4 bg-[#F1F5F9] rounded-xl w-1/3" />
+              <div className="h-4 bg-[#F1F5F9] rounded-xl w-1/2" />
+              <div className="h-24 bg-[#F8FAFC] rounded-2xl w-full" />
               <div className="h-20 bg-[#F8FAFC] rounded-2xl w-full" />
-              <div className="h-28 bg-[#F8FAFC] rounded-2xl w-full" />
             </div>
           </div>
         )}
@@ -437,7 +517,7 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
                 Hmm, belum ada highlight nih.
               </h3>
               <p className="text-sm text-[#525C68] leading-relaxed">
-                Tempel link beritanya di sebelah ya, nanti ringkasan fakta 5W+1H dan naskah Simfoni Highlight buat Crew SIMFONI langsung muncul di sini!
+                Tempel link beritanya di sebelah ya, nanti naskah Simfoni Highlight 5W+1H buat Crew SIMFONI langsung muncul sesuai format resmi siaran!
               </p>
             </div>
           </div>
@@ -454,118 +534,125 @@ export const AIHighlightPanel: React.FC<AIHighlightPanelProps> = ({
               </div>
             )}
 
-            <div className="text-xs font-semibold text-[#2B6CB0]">
-              Yeay! Highlight berita kamu udah siap dibaca! 🎙️
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-semibold text-[#2B6CB0]">
+              <span>Yeay! Simfoni Highlight kamu udah siap baca on-air! 🎙️</span>
+              <span className="text-[#525C68] font-medium">
+                Sumber: {result.source}
+                {newsUrl && (
+                  <>
+                    {' · '}
+                    <a
+                      href={newsUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-[#2B6CB0] hover:underline"
+                    >
+                      <span>Buka Berita</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </>
+                )}
+              </span>
             </div>
 
-            {/* Teaser Berita 2 if present */}
+            {/* 1. JUDUL BERITA 2 (Paling Atas sesuai format paten) */}
             {result.title2 && (
-              <div className="p-3 rounded-2xl bg-[#F6FAFF] border border-[#C7DDF6] text-xs sm:text-sm text-[#1F2428]">
-                <span className="font-bold text-[#2B6CB0]">Teaser Berita 2: </span>
-                {result.title2}
+              <div className="p-4 rounded-2xl bg-[#F6FAFF] border border-[#C7DDF6] space-y-1">
+                <div className="text-[11px] font-bold text-[#2B6CB0] uppercase tracking-wider">
+                  Judul Berita 2
+                </div>
+                <p className="font-display font-bold text-base sm:text-lg text-[#1F2428] leading-snug">
+                  {result.title2}
+                </p>
               </div>
             )}
 
-            {/* Opener */}
+            {/* 2. Kalimat Pembuka Paten */}
             {result.openerLine && (
-              <div className="p-3.5 rounded-2xl bg-[#EAF3FE] border border-[#C7DDF6] space-y-0.5">
-                <div className="text-[11px] font-bold text-[#2B6CB0]">Pembuka:</div>
-                <p className="text-sm sm:text-base font-semibold text-[#1F2428]">
+              <div className="p-4 rounded-2xl bg-[#EAF3FE] border border-[#C7DDF6]">
+                <p className="text-sm sm:text-base font-semibold text-[#1E3A5F]">
                   {result.openerLine}
                 </p>
               </div>
             )}
 
-            {/* News 1 Metadata */}
-            <div className="space-y-2 pb-4 border-b border-[#EDF1F5]">
-              <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-[#2B6CB0]">
-                <span>Sumber: {result.source}</span>
-                {newsUrl && (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <a
-                      href={newsUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 hover:underline"
-                    >
-                      <span>Buka Berita Asli</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </>
-                )}
+            {/* 3 & 4. JUDUL BERITA 1 + Isi Berita Pertama */}
+            <section className="p-5 rounded-2xl bg-[#F8FAFC] border border-[#E5E9F0] space-y-3">
+              <div className="space-y-1">
+                <div className="text-[11px] font-bold text-[#2B6CB0] uppercase tracking-wider">
+                  Judul Berita 1
+                </div>
+                <h3 className="font-display font-bold text-lg sm:text-xl text-[#1F2428] leading-snug">
+                  {result.title}
+                </h3>
               </div>
-              <h3 className="font-display font-bold text-xl text-[#1F2428] leading-snug">
-                {result.title}
-              </h3>
-              <p className="text-sm text-[#425466] leading-relaxed bg-[#F8FAFC] p-3.5 rounded-2xl border border-[#E5E9F0]">
-                <strong className="text-[#1F2428]">Inti Berita (5W+1H): </strong>
-                {result.summary}
-              </p>
-            </div>
 
-            {/* Dialogue Output 1 */}
-            <div className="space-y-3">
-              <div className="text-xs font-bold text-[#525C68] tracking-wide">
-                Isi Berita 1 (Siap Baca 4–8 Baris)
-              </div>
-              <div className="space-y-3">
+              <div className="space-y-2.5 pt-1 text-sm sm:text-[15px] text-[#1F2428] leading-relaxed">
                 {result.dialogue.map((turn, idx) => (
-                  <div
-                    key={`${turn.speaker}-${idx}`}
-                    className="p-4 rounded-2xl bg-[#F8FAFC] border border-[#E5E9F0] space-y-1"
-                  >
-                    <div className="text-xs font-bold text-[#2B6CB0] tracking-wide">
-                      {turn.speaker.toUpperCase()}:
-                    </div>
-                    <p className="text-sm sm:text-base text-[#1F2428] leading-relaxed">
-                      {turn.text}
-                    </p>
-                  </div>
+                  <p key={`${turn.speaker}-${idx}`}>
+                    {result.dialogue.length > 1 && (
+                      <strong className="font-bold text-[#1E4E8C] mr-1.5">
+                        {turn.speaker.toUpperCase()}:
+                      </strong>
+                    )}
+                    <span>{turn.text}</span>
+                  </p>
                 ))}
               </div>
-            </div>
+            </section>
 
-            {/* Dialogue Output 2 (if Berita 2 provided) */}
+            {/* 5 & 6. Visual JEDA "---" dan Isi Berita Kedua */}
             {result.dialogue2 && result.dialogue2.length > 0 && (
-              <div className="space-y-3 pt-2 border-t border-[#EDF1F5]">
-                <div className="text-xs font-bold text-[#525C68] tracking-wide">
-                  Jeda (—) · Isi Berita 2{result.title2 ? `: ${result.title2}` : ''}
+              <>
+                <div
+                  className="flex items-center gap-3 py-1"
+                  aria-label="Jeda antarberita"
+                >
+                  <div className="h-px flex-1 bg-[#C7DDF6]" />
+                  <span className="font-mono text-xs font-bold tracking-widest text-[#2B6CB0] px-2">
+                    ---
+                  </span>
+                  <div className="h-px flex-1 bg-[#C7DDF6]" />
                 </div>
-                <div className="space-y-3">
+
+                <section className="p-5 rounded-2xl bg-[#F8FAFC] border border-[#E5E9F0] space-y-2.5 text-sm sm:text-[15px] text-[#1F2428] leading-relaxed">
                   {result.dialogue2.map((turn, idx) => (
-                    <div
-                      key={`b2-${turn.speaker}-${idx}`}
-                      className="p-4 rounded-2xl bg-[#F8FAFC] border border-[#E5E9F0] space-y-1"
-                    >
-                      <div className="text-xs font-bold text-[#2B6CB0] tracking-wide">
-                        {turn.speaker.toUpperCase()}:
-                      </div>
-                      <p className="text-sm sm:text-base text-[#1F2428] leading-relaxed">
-                        {turn.text}
-                      </p>
-                    </div>
+                    <p key={`b2-${turn.speaker}-${idx}`}>
+                      {result.dialogue2 && result.dialogue2.length > 1 && (
+                        <strong className="font-bold text-[#1E4E8C] mr-1.5">
+                          {turn.speaker.toUpperCase()}:
+                        </strong>
+                      )}
+                      <span>{turn.text}</span>
+                    </p>
                   ))}
-                </div>
+                </section>
+              </>
+            )}
+
+            {/* Info lembut jika baru 1 sumber berita (tidak mengarang berita ke-2) */}
+            {result.needsSecondSource && !result.dialogue2?.length && (
+              <div className="p-3.5 rounded-2xl bg-[#F6FAFF] border border-[#DCE8F6] text-xs text-[#3B4C5E]">
+                Baru 1 sumber berita yang dimasukkan. Kalau ingin pakai format 2 berita lengkap dengan Judul Berita 2 dan jeda <code>---</code>, klik <strong>Tambah Berita 2</strong> lalu tempel link atau teks beritanya.
               </div>
             )}
 
-            {/* Closer */}
+            {/* 7. Kalimat Penutup Paten */}
             {result.closerLine && (
-              <div className="p-3.5 rounded-2xl bg-[#EAF3FE] border border-[#C7DDF6] space-y-0.5">
-                <div className="text-[11px] font-bold text-[#2B6CB0]">Penutup:</div>
-                <p className="text-sm sm:text-base font-semibold text-[#1F2428]">
+              <div className="p-4 rounded-2xl bg-[#EAF3FE] border border-[#C7DDF6]">
+                <p className="text-sm sm:text-base font-semibold text-[#1E3A5F]">
                   {result.closerLine}
                 </p>
               </div>
             )}
 
             {/* Action Buttons */}
-            <div className="flex flex-wrap items-center gap-2.5 pt-2">
+            <div className="flex flex-wrap items-center gap-2.5 pt-1">
               <button
                 type="button"
                 onClick={() => void generateHighlight()}
-                className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#F1F5F9] hover:bg-[#E2E8F0] text-xs sm:text-sm font-semibold text-[#1F2428] min-h-[44px] whitespace-nowrap"
+                disabled={!isOnline}
+                className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#F1F5F9] hover:bg-[#E2E8F0] disabled:opacity-50 text-xs sm:text-sm font-semibold text-[#1F2428] min-h-[44px] whitespace-nowrap"
               >
                 <RefreshCw className="w-4 h-4 text-[#2B6CB0]" />
                 <span>Regenerate</span>

@@ -4,7 +4,14 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
+import {
+  GEMINI_MODEL,
+  classifyGeminiError,
+  getGenAI,
+  hasValidApiKey,
+  withGeminiRetry,
+} from './server/aiClient.ts';
 import {
   HIGHLIGHT_KNOWLEDGE_CONTEXT,
   SCRIPT_KNOWLEDGE_CONTEXT,
@@ -14,22 +21,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT) || 3000;
-
-function hasValidApiKey(): boolean {
-  const key = process.env.GEMINI_API_KEY?.trim();
-  return Boolean(key && key !== 'MY_GEMINI_API_KEY');
-}
-
-function getGenAI(): GoogleGenAI {
-  return new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
-}
 
 function isValidHttpUrl(rawUrl: string): boolean {
   try {
@@ -148,7 +139,11 @@ function buildOfficialOpener(announcers: string[]): string {
 }
 
 const OFFICIAL_HIGHLIGHT_CLOSER =
-  'Itu tadi Simfoni Highlight buat kamu, saatnya kita move ke Lalu Lalang.';
+  'Itu tadi Simfoni Highlight buat kamu, saatnya kita move ke lalu lalang.';
+
+function enforceHighlightStyle(text: string): string {
+  return text.replace(/\bsobat\s+siar\b/gi, 'Sobat Muda').trim();
+}
 
 function buildDemoHighlight(
   newsUrl: string,
@@ -178,17 +173,17 @@ function buildDemoHighlight(
     ? [
         {
           speaker: p1,
-          text: `Sobat Siar, ada kabar terbaru yang lagi ramai dibahas di ${sourceHost}. Saat GEMINI_API_KEY aktif, di bagian ini bakal tersaji inti berita unsur 5W+1H dalam gaya semiformal santai sepanjang 4 sampai 8 baris.`,
+          text: `Sobat Muda, ada kabar terbaru yang lagi ramai dibahas di ${sourceHost}. Saat GEMINI_API_KEY aktif, di bagian ini bakal tersaji inti berita unsur 5W+1H dalam gaya semiformal santai sepanjang 4 sampai 8 baris sesuai artikel asli.`,
         },
         {
           speaker: p2,
-          text: `Betul banget, ${p1}. Semua fakta, nama tokoh, waktu, lokasi, dan konteksnya langsung diambil dari isi berita asli tanpa ngarang informasi tambahan buat Sobat Siar.`,
+          text: `Betul banget, ${p1}. Semua fakta, nama tokoh, waktu, lokasi, dan konteksnya langsung diambil dari sumber berita tanpa mengarang informasi tambahan buat Sobat Muda.`,
         },
       ]
     : [
         {
           speaker: p1,
-          text: `Sobat Siar, di Simfoni Highlight kali ini ada rangkuman kabar terbaru dari ${sourceHost}. Bagian ini mengikuti aturan resmi Highlight sepanjang 4 sampai 8 baris dengan unsur 5W+1H lengkap dan bahasa semiformal yang enak dibacakan saat on-air.`,
+          text: `Sobat Muda, di Simfoni Highlight kali ini ada rangkuman kabar terbaru dari ${sourceHost}. Bagian ini mengikuti aturan resmi Highlight sepanjang 4 sampai 8 baris dengan unsur 5W+1H lengkap dan bahasa semiformal non-baku yang enak dibacakan saat on-air.`,
         },
       ];
 
@@ -197,7 +192,7 @@ function buildDemoHighlight(
     ? [
         {
           speaker: p2 || p1,
-          text: `Masih di Simfoni Highlight, kabar kedua dari sumber pendamping juga dirangkum padat 4 sampai 8 baris sesuai pedoman resmi 5W+1H supaya Sobat Siar langsung dapat intinya sebelum masuk Lalu Lalang.`,
+          text: `Masih di Simfoni Highlight, kabar kedua dari sumber pendamping juga dirangkum padat 4 sampai 8 baris sesuai pedoman resmi 5W+1H supaya Sobat Muda langsung dapat intinya sebelum masuk lalu lalang.`,
         },
       ]
     : undefined;
@@ -212,6 +207,7 @@ function buildDemoHighlight(
     closerLine: OFFICIAL_HIGHLIGHT_CLOSER,
     dialogue,
     dialogue2,
+    needsSecondSource: !hasSecond,
   };
 }
 
@@ -250,9 +246,9 @@ function normalizeSegmentsInput(
 ): NormalizedSegmentInput[] {
   const fallback: NormalizedSegmentInput[] = [
     { title: 'TOH (Opening)', durationMinutes: 2 },
-    { title: 'Talk 1', durationMinutes: 3 },
-    { title: 'Talk 2', durationMinutes: 3 },
-    { title: 'Talk 3', durationMinutes: 2 },
+    { title: 'Talk 1 — Bridging ke Tema', durationMinutes: 3 },
+    { title: 'Talk 2 — Tema', durationMinutes: 3 },
+    { title: 'Talk 3 — Tema dan Interaksi', durationMinutes: 2 },
     { title: 'Closing', durationMinutes: 1 },
   ];
 
@@ -334,11 +330,11 @@ function buildDemoScript(
         turns.push(
           {
             speaker: p1,
-            text: `Assalamualaikum warahmatullahi wabarakatuh, Sobat Muda! 107,7 SIMFONI FM The power hits station, dengerin lagu enak pilihanmu. Aku ${p1} siap nemenin kamu di ${safeProgram}${durationClause}.`,
+            text: `Assalamualaikum warahmatullahi wabarakatuh, Sobat Muda! 107,7 SIMFONI FM The Power Hits Station, dengerin lagu enak pilihanmu. Aku ${p1} siap nemenin kamu di ${safeProgram}${durationClause}.`,
           },
           {
             speaker: p2,
-            text: `Waalaikumsalam, dan aku ${p2}! Gimana nih kabar kamu hari ini, Sobat Muda? Semoga kuliah, kerjaan, atau aktivitas kamu di rumah tetep lancar ya.`,
+            text: `Waalaikumsalam, dan aku ${p2}! Gimana nih kabar kamu hari ini, Sobat Muda? Semoga kuliah, kerjaan, atau aktivitas kamu tetep lancar ya.`,
           },
           {
             speaker: p1,
@@ -353,7 +349,7 @@ function buildDemoScript(
         turns.push(
           {
             speaker: p1,
-            text: `Assalamualaikum warahmatullahi wabarakatuh, Sobat Muda! 107,7 SIMFONI FM The power hits station, dengerin lagu enak pilihanmu.`,
+            text: `Assalamualaikum warahmatullahi wabarakatuh, Sobat Muda! 107,7 SIMFONI FM The Power Hits Station, dengerin lagu enak pilihanmu.`,
           },
           {
             speaker: p1,
@@ -362,24 +358,40 @@ function buildDemoScript(
         );
       }
     } else if (isClosing) {
-      const closingGreeting =
-        closingType === 'segmen1'
-          ? `Makasih banget ya Sobat Muda udah nemenin kita di segmen pertama ${safeProgram}. Tetep stay tune, kita balik lagi habis lagu berikut!`
-          : `Makasih banyak ya Sobat Muda udah dengerin ${safeProgram} sampai selesai, terus pantengin 107,7 SIMFONI FM! (${p1} pamit${p2 ? `, ${p2} pamit` : ''}, wassalamualaikum warahmatullahi wabarakatuh, salam peace dan kreasi).`;
-
-      if (p2) {
+      if (closingType === 'segmen1') {
+        if (p2) {
+          turns.push(
+            {
+              speaker: p1,
+              text: `Nggak kerasa banget obrolan kita tentang ${safeTheme} di ${safeProgram} udah masuk penghujung segmen 1 nih, Sobat Muda.`,
+            },
+            {
+              speaker: p2,
+              text: `Makasih banget ya udah nemenin kita di segmen pertama ${safeProgram}. Tetep stay tune, kita bakal balik lagi di segmen 2 habis lagu pilihan berikut!`,
+            }
+          );
+        } else {
+          turns.push({
+            speaker: p1,
+            text: `Makasih banget ya Sobat Muda udah nemenin kita di segmen pertama ${safeProgram}. Tetep stay tune, kita balik lagi habis lagu berikut!`,
+          });
+        }
+      } else if (p2) {
         turns.push(
           {
             speaker: p1,
-            text: `Nggak kerasa banget obrolan kita tentang ${safeTheme} di ${safeProgram} udah masuk bagian akhir nih, Sobat Muda. Semoga obrolan tadi bisa jadi pengingat kecil buat keseharian kamu.`,
+            text: `Nggak kerasa banget obrolan kita tentang ${safeTheme} di ${safeProgram} udah sampai penghujung acara, Sobat Muda. Makasih banyak udah setia dengerin, aku ${p1} pamit.`,
           },
           {
             speaker: p2,
-            text: closingGreeting,
+            text: `Aku ${p2} juga pamit ya, Sobat Muda, sampai ketemu di siaran berikutnya! Wassalamualaikum warahmatullahi wabarakatuh, salam peace dan kreasi.`,
           }
         );
       } else {
-        turns.push({ speaker: p1, text: closingGreeting });
+        turns.push({
+          speaker: p1,
+          text: `Makasih banyak ya Sobat Muda udah dengerin ${safeProgram} sampai selesai! Aku ${p1} pamit. Wassalamualaikum warahmatullahi wabarakatuh, salam peace dan kreasi.`,
+        });
       }
     } else {
       const fillerExchanges = p2
@@ -596,21 +608,23 @@ async function createServer() {
       const speaker1 = cleanAnnouncers[0].toUpperCase();
       const speaker2 = cleanAnnouncers[1]?.toUpperCase();
       const speakerInstruction = speaker2
-        ? `Buat pembacaan dialog bergantian yang ringkas antara "${speaker1}" dan "${speaker2}". Gunakan label speaker persis "${speaker1}" dan "${speaker2}".`
-        : `Buat naskah highlight monolog siap baca untuk penyiar "${speaker1}". Gunakan label speaker persis "${speaker1}".`;
+        ? `Jika membacakan 2 penyiar, bagi teks berita secara ringkas dan mengalir antara "${speaker1}" dan "${speaker2}" (tanpa basa-basi tambahan di luar berita). Gunakan label speaker persis "${speaker1}" dan "${speaker2}".`
+        : `Buat narasi highlight siap baca untuk penyiar "${speaker1}". Gunakan label speaker persis "${speaker1}".`;
 
       const officialOpener = buildOfficialOpener(cleanAnnouncers);
 
       const systemInstruction = `${HIGHLIGHT_KNOWLEDGE_CONTEXT}
 
 INSTRUKSI EKSEKUSI SERVER:
-1. FAKTUAL KETAT: Jangan pernah mengarang fakta, angka, nama, kutipan, atau sumber berita yang tidak ada pada artikel sumber.
+1. FAKTUAL KETAT: DILARANG mengarang fakta, angka, nama, kutipan, tanggal, sumber berita, atau berita ke-2 jika hanya ada 1 sumber.
 2. PENYIAR: ${speakerInstruction}
-3. WAJIB MENGIKUTI FORMAT PATEN SIMFONI HIGHLIGHT:
+3. SAPAAN PENDENGAR: Gunakan "Sobat Muda" (JANGAN pakai "Sobat Siar").
+4. WAJIB MENGIKUTI FORMAT PATEN SIMFONI HIGHLIGHT:
    - openerLine persis: "${officialOpener}"
    - closerLine persis: "${OFFICIAL_HIGHLIGHT_CLOSER}"
-   - Isi berita 1 (dialogue): ringkas 4-8 baris kalimat on-air, diawali sapaan "Sobat Siar", mencakup 5W+1H, bahasa Indonesia semiformal tidak baku.
-   - Jika ada berita ke-2 yang diberikan pengguna, isi juga title2 (judul berita 2) dan dialogue2 (isi berita 2, tetap ringkas 4-8 baris). Jika tidak ada berita ke-2, kosongkan title2 dan dialogue2.`;
+   - dialogue (Isi berita 1): ringkas setara 4-8 baris Word font 12 (±55-115 kata), dimulai menyapa "Sobat Muda", mencakup 5W+1H, bahasa Indonesia semiformal tidak baku yang enak didengar.
+   - ${trimmedUrl2 || trimmedManualText2 ? 'Ada berita ke-2 dari pengguna: isi title2 (judul berita 2) dan dialogue2 (isi berita 2, tetap ringkas 4-8 baris).' : 'TIDAK ADA berita ke-2: kosongkan title2 ("") dan dialogue2 ([]). JANGAN mengarang berita ke-2.'}
+   - JANGAN menambah pembuka, penutup, atau komentar ekstra di luar struktur JSON.`;
 
       let extractedSource1 = trimmedManualText;
       let fallbackTitle1 = '';
@@ -639,7 +653,47 @@ INSTRUKSI EKSEKUSI SERVER:
         }
       }
 
+      const normalizeDialogueArray = (
+        rawDialogue: unknown,
+        defaultSpeaker: string
+      ): DialogueTurn[] => {
+        if (typeof rawDialogue === 'string') {
+          const clean = enforceHighlightStyle(rawDialogue);
+          return clean ? [{ speaker: defaultSpeaker, text: clean }] : [];
+        }
+        if (!Array.isArray(rawDialogue)) return [];
+        const turns: DialogueTurn[] = [];
+        for (const item of rawDialogue) {
+          if (typeof item === 'string') {
+            const clean = enforceHighlightStyle(item);
+            if (clean) turns.push({ speaker: defaultSpeaker, text: clean });
+          } else if (item && typeof item === 'object') {
+            const rec = item as { speaker?: unknown; text?: unknown };
+            const text = enforceHighlightStyle(String(rec.text || ''));
+            if (text) {
+              const rawSp = String(rec.speaker || defaultSpeaker)
+                .trim()
+                .toUpperCase();
+              const sp = rawSp === speaker1 || rawSp === speaker2 ? rawSp : defaultSpeaker;
+              turns.push({ speaker: sp, text });
+            }
+          }
+        }
+        return turns;
+      };
+
       if (extractedSource1 && (!hasSecondNews || extractedSource2)) {
+        const jsonTemplate = `{
+  "title": "Judul berita 1 akurat sesuai artikel",
+  "source": "Nama media/sumber berita 1",
+  "summary": "Ringkasan fakta inti 5W+1H 2 kalimat",
+  "title2": ${hasSecondNews ? '"Judul berita 2 akurat sesuai artikel ke-2"' : '""'},
+  "dialogue": [
+    { "speaker": "${speaker1}", "text": "Sobat Muda, ... (narasi 4-8 baris 5W+1H semiformal non-baku)" }
+  ],
+  "dialogue2": ${hasSecondNews ? `[{ "speaker": "${speaker2 || speaker1}", "text": "... (narasi berita 2 sepanjang 4-8 baris 5W+1H)" }]` : '[]'}
+}`;
+
         const userContent = [
           `BERITA 1 (WAJIB):`,
           `Link Referensi: ${trimmedUrl || '-'}`,
@@ -647,105 +701,85 @@ INSTRUKSI EKSEKUSI SERVER:
           `Sumber Awal: ${fallbackSource1 || '-'}`,
           `Isi Berita 1:\n${extractedSource1}`,
           hasSecondNews
-            ? `\n---\nBERITA 2 (OPSIONAL / PENDAMPING):\nLink Referensi 2: ${trimmedUrl2 || '-'}\nJudul Awal 2: ${fallbackTitle2 || '-'}\nSumber Awal 2: ${fallbackSource2 || '-'}\nIsi Berita 2:\n${extractedSource2}`
-            : '\n(Tidak ada berita ke-2; jangan buat title2 atau dialogue2.)',
+            ? `\n---\nBERITA 2 (PENDAMPING):\nLink Referensi 2: ${trimmedUrl2 || '-'}\nJudul Awal 2: ${fallbackTitle2 || '-'}\nSumber Awal 2: ${fallbackSource2 || '-'}\nIsi Berita 2:\n${extractedSource2}`
+            : '\n(TIDAK ADA BERITA KE-2. Set title2="" dan dialogue2=[].)',
+          `\nBalas HANYA dengan 1 objek JSON valid mengikuti struktur persis berikut:\n${jsonTemplate}`,
         ].join('\n');
 
-        const response = await ai.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: userContent,
-          config: {
-            systemInstruction,
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING, description: 'Judul berita 1 akurat sesuai isi artikel' },
-                source: { type: Type.STRING, description: 'Nama media/sumber berita' },
-                summary: {
-                  type: Type.STRING,
-                  description: 'Ringkasan fakta inti 5W+1H dalam 2-3 kalimat padat',
-                },
-                title2: {
-                  type: Type.STRING,
-                  description: 'Judul berita 2 (teaser) jika ada berita 2, selain itu string kosong',
-                },
-                openerLine: {
-                  type: Type.STRING,
-                  description: `Harus persis: ${officialOpener}`,
-                },
-                closerLine: {
-                  type: Type.STRING,
-                  description: `Harus persis: ${OFFICIAL_HIGHLIGHT_CLOSER}`,
-                },
-                dialogue: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      speaker: { type: Type.STRING },
-                      text: { type: Type.STRING },
-                    },
-                    required: ['speaker', 'text'],
-                  },
-                },
-                dialogue2: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      speaker: { type: Type.STRING },
-                      text: { type: Type.STRING },
-                    },
-                    required: ['speaker', 'text'],
-                  },
-                },
+        const parsed = await withGeminiRetry(
+          async () => {
+            const response = await ai.models.generateContent({
+              model: GEMINI_MODEL,
+              contents: userContent,
+              config: {
+                systemInstruction,
+                responseMimeType: 'application/json',
+                abortSignal: AbortSignal.timeout(55_000),
               },
-              required: ['title', 'source', 'summary', 'openerLine', 'closerLine', 'dialogue'],
-            },
+            });
+
+            const rawText = (response.text || '').trim();
+            if (!rawText) {
+              throw Object.assign(new Error('Empty response from Gemini Highlight'), {
+                aiCode: 'EMPTY_RESPONSE',
+              });
+            }
+
+            const decoded = parseJsonSafely<{
+              title?: string;
+              source?: string;
+              summary?: string;
+              title2?: string;
+              dialogue?: unknown;
+              dialogue2?: unknown;
+            }>(rawText);
+
+            const normalizedD1 = decoded
+              ? normalizeDialogueArray(decoded.dialogue, speaker1)
+              : [];
+
+            if (!decoded || normalizedD1.length === 0) {
+              throw Object.assign(new Error('Malformed Highlight JSON'), {
+                aiCode: 'PARSE_ERROR',
+              });
+            }
+
+            return { decoded, normalizedD1 };
           },
-        });
+          { featureLabel: 'AI Highlight', maxAttempts: 2, baseDelayMs: 1100 }
+        );
 
-        const parsed = parseJsonSafely<{
-          title: string;
-          source: string;
-          summary: string;
-          title2?: string;
-          openerLine?: string;
-          closerLine?: string;
-          dialogue: { speaker: string; text: string }[];
-          dialogue2?: { speaker: string; text: string }[];
-        }>(response.text || '{}');
-
-        if (!parsed || !Array.isArray(parsed.dialogue) || parsed.dialogue.length === 0) {
-          res.status(502).json({ error: 'Gagal memproses format naskah dari AI. Coba lagi.' });
-          return;
-        }
+        const d2 = hasSecondNews
+          ? normalizeDialogueArray(parsed.decoded.dialogue2, speaker2 || speaker1)
+          : [];
 
         res.json({
           isDemo: false,
-          title: parsed.title,
-          source: parsed.source,
-          summary: parsed.summary,
-          title2: hasSecondNews && parsed.title2?.trim() ? parsed.title2.trim() : undefined,
+          title: (parsed.decoded.title || fallbackTitle1 || 'Berita Terkini').trim(),
+          source:
+            (parsed.decoded.source || fallbackSource1 || '').trim() ||
+            (trimmedUrl ? new URL(trimmedUrl).hostname.replace(/^www\./, '') : 'Media Online'),
+          summary: enforceHighlightStyle(parsed.decoded.summary || ''),
+          title2:
+            hasSecondNews && parsed.decoded.title2?.trim()
+              ? parsed.decoded.title2.trim()
+              : undefined,
           openerLine: officialOpener,
           closerLine: OFFICIAL_HIGHLIGHT_CLOSER,
-          dialogue: parsed.dialogue,
-          dialogue2:
-            hasSecondNews && Array.isArray(parsed.dialogue2) && parsed.dialogue2.length > 0
-              ? parsed.dialogue2
-              : undefined,
+          dialogue: parsed.normalizedD1,
+          dialogue2: hasSecondNews && d2.length > 0 ? d2 : undefined,
+          needsSecondSource: !hasSecondNews,
         });
         return;
       }
 
       // Fallback: use Gemini urlContext when direct fetch could not read URL 1 or URL 2
-      const urlPrompt = `Baca dan pahami isi berita dari URL berikut:
+      const urlPrompt = `Baca dan pahami isi berita dari URL/teks berikut:
 - URL Berita 1: ${trimmedUrl || '(lihat teks manual di bawah)'}
 ${extractedSource1 ? `Teks Berita 1:\n${extractedSource1}\n` : ''}
-${hasSecondNews ? `- URL Berita 2: ${trimmedUrl2 || '(lihat teks manual di bawah)'}\n${extractedSource2 ? `Teks Berita 2:\n${extractedSource2}\n` : ''}` : ''}
+${hasSecondNews ? `- URL Berita 2: ${trimmedUrl2 || '(lihat teks manual di bawah)'}\n${extractedSource2 ? `Teks Berita 2:\n${extractedSource2}\n` : ''}` : '(TIDAK ADA berita ke-2. Jangan membuat title2 atau dialogue2.)'}
 
-Jika berita utama TIDAK DAPAT diakses, berbayar, diblokir, atau isinya kosong, balas PERSIS dengan JSON:
+Jika berita utama TIDAK DAPAT diakses, berbayar, diblokir, atau isinya tidak tersedia, balas PERSIS dengan JSON:
 {"accessible": false}
 
 Jika DAPAT diakses, balas HANYA dengan JSON valid sesuai struktur ini (tanpa teks tambahan di luar JSON):
@@ -753,76 +787,89 @@ Jika DAPAT diakses, balas HANYA dengan JSON valid sesuai struktur ini (tanpa tek
   "accessible": true,
   "title": "judul berita 1 sesuai artikel",
   "source": "nama media/sumber berita",
-  "summary": "ringkasan inti berita 2-3 kalimat faktual 5W+1H",
-  "title2": "${hasSecondNews ? 'judul berita 2' : ''}",
-  "openerLine": "${officialOpener}",
-  "closerLine": "${OFFICIAL_HIGHLIGHT_CLOSER}",
+  "summary": "ringkasan inti berita 2 kalimat faktual 5W+1H",
+  "title2": "${hasSecondNews ? 'judul berita 2 sesuai artikel ke-2' : ''}",
   "dialogue": [
-    { "speaker": "${speaker1}", "text": "Sobat Siar, ... (4-8 baris semiformal non-baku)" }
+    { "speaker": "${speaker1}", "text": "Sobat Muda, ... (4-8 baris semiformal non-baku)" }
   ],
   "dialogue2": ${hasSecondNews ? `[{ "speaker": "${speaker2 || speaker1}", "text": "..." }]` : '[]'}
 }`;
 
-      const urlContextResponse = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: urlPrompt,
-        config: {
-          systemInstruction,
-          tools: [{ urlContext: {} }],
-        },
-      });
+      const parsedUrlResult = await withGeminiRetry(
+        async () => {
+          const urlContextResponse = await ai.models.generateContent({
+            model: GEMINI_MODEL,
+            contents: urlPrompt,
+            config: {
+              systemInstruction,
+              tools: [{ urlContext: {} }],
+              abortSignal: AbortSignal.timeout(55_000),
+            },
+          });
 
-      const parsedUrlResult = parseJsonSafely<{
-        accessible?: boolean;
-        title?: string;
-        source?: string;
-        summary?: string;
-        title2?: string;
-        openerLine?: string;
-        closerLine?: string;
-        dialogue?: { speaker: string; text: string }[];
-        dialogue2?: { speaker: string; text: string }[];
-      }>(urlContextResponse.text || '');
+          const rawText = (urlContextResponse.text || '').trim();
+          if (!rawText) {
+            throw Object.assign(new Error('Empty urlContext response'), {
+              aiCode: 'EMPTY_RESPONSE',
+            });
+          }
+
+          return parseJsonSafely<{
+            accessible?: boolean;
+            title?: string;
+            source?: string;
+            summary?: string;
+            title2?: string;
+            dialogue?: unknown;
+            dialogue2?: unknown;
+          }>(rawText);
+        },
+        { featureLabel: 'AI Highlight', maxAttempts: 2, baseDelayMs: 1100 }
+      );
+
+      const urlDialogue1 = parsedUrlResult
+        ? normalizeDialogueArray(parsedUrlResult.dialogue, speaker1)
+        : [];
 
       if (
         !parsedUrlResult ||
         parsedUrlResult.accessible === false ||
-        !parsedUrlResult.dialogue ||
-        parsedUrlResult.dialogue.length === 0
+        urlDialogue1.length === 0
       ) {
         res.status(422).json({
           code: 'URL_UNREACHABLE',
           error:
-            'Link berita tidak dapat diakses secara otomatis (kemungkinan diblokir atau butuh login). Silakan tempel isi beritanya di kolom manual yang tersedia.',
+            'Link berita tidak dapat diakses otomatis (kemungkinan diblokir, butuh login, atau halaman dinamis). Tempel isi beritanya secara manual di kolom bawah agar faktanya tetap akurat.',
         });
         return;
       }
 
+      const urlDialogue2 = hasSecondNews
+        ? normalizeDialogueArray(parsedUrlResult.dialogue2, speaker2 || speaker1)
+        : [];
+
       res.json({
         isDemo: false,
-        title: parsedUrlResult.title || 'Berita Terkini',
+        title: (parsedUrlResult.title || 'Berita Terkini').trim(),
         source:
-          parsedUrlResult.source ||
+          (parsedUrlResult.source || '').trim() ||
           (trimmedUrl ? new URL(trimmedUrl).hostname.replace(/^www\./, '') : 'Media Online'),
-        summary: parsedUrlResult.summary || '',
+        summary: enforceHighlightStyle(parsedUrlResult.summary || ''),
         title2:
           hasSecondNews && parsedUrlResult.title2?.trim()
             ? parsedUrlResult.title2.trim()
             : undefined,
         openerLine: officialOpener,
         closerLine: OFFICIAL_HIGHLIGHT_CLOSER,
-        dialogue: parsedUrlResult.dialogue,
-        dialogue2:
-          hasSecondNews &&
-          Array.isArray(parsedUrlResult.dialogue2) &&
-          parsedUrlResult.dialogue2.length > 0
-            ? parsedUrlResult.dialogue2
-            : undefined,
+        dialogue: urlDialogue1,
+        dialogue2: hasSecondNews && urlDialogue2.length > 0 ? urlDialogue2 : undefined,
+        needsSecondSource: !hasSecondNews,
       });
     } catch (error) {
-      console.error('AI Highlight Error:', error);
-      res.status(500).json({
-        error: 'Terjadi gangguan saat menghubungi layanan AI. Silakan coba beberapa saat lagi.',
+      const classified = classifyGeminiError(error, 'AI Highlight');
+      res.status(classified.httpStatus).json({
+        code: classified.code,
+        error: classified.message,
       });
     }
   });
@@ -1036,7 +1083,7 @@ Jika DAPAT diakses, balas HANYA dengan JSON valid sesuai struktur ini (tanpa tek
     const closingRuleInstruction =
       safeClosingType === 'segmen1'
         ? `CLOSING SEGMEN 1: Bagian penutup (Closing) berisi rangkuman singkat, pesan penutup, dan terima kasih kepada Sobat Muda, lalu jembatan ke lagu/segmen berikutnya (TIDAK PERLU salam pamit akhir).`
-        : `CLOSING SEGMEN 2 / AKHIR: Bagian penutup (Closing) berisi rangkuman singkat, pesan penutup, ucapan terima kasih kepada Sobat Muda, dan salam penutup resmi persis pola dokumen: "(${speaker1} pamit${speaker2 ? `, ${speaker2} pamit` : ''}, wassalamualaikum warahmatullahi wabarakatuh, salam peace dan kreasi)".`;
+        : `CLOSING SEGMEN 2 / AKHIR: Bagian penutup (Closing) berisi rangkuman singkat, pesan penutup, dan ucapan terima kasih kepada Sobat Muda, lalu ditutup dengan format wajib berikut:\n${speaker1}: [Ucapan pamit untuk Sobat Muda]\n${speaker2 ? `${speaker2}: [Ucapan pamit untuk Sobat Muda]\n` : ''}(Baris terakhir penutup wajib diakhiri salam resmi: "Wassalamualaikum warahmatullahi wabarakatuh, salam peace dan kreasi.")`;
 
     const segmentPlanLines = requestedSegments
       .map((seg, i) => {
@@ -1048,7 +1095,7 @@ Jika DAPAT diakses, balas HANYA dengan JSON valid sesuai struktur ini (tanpa tek
           i === 0
             ? ' [OPENING: Wajib diawali salam misalnya "Assalamualaikum warahmatullahi wabarakatuh", sapa "Sobat Muda", kenalkan penyiar, nama program, tema' +
               (trimmedProgramDuration ? `, durasi program "${trimmedProgramDuration}"` : '') +
-              ', tagline "107,7 SIMFONI FM The power hits station, dengerin lagu enak pilihanmu", lalu pengantar tema]'
+              ', tagline "107,7 SIMFONI FM The Power Hits Station, dengerin lagu enak pilihanmu.", lalu pengantar tema]'
             : i === requestedSegments.length - 1 || seg.title.toLowerCase().includes('closing')
               ? ' [CLOSING: Rangkuman singkat, pesan penutup, terima kasih ke Sobat Muda, dan salam penutup sesuai jenis segmen]'
               : ' [ISI: Kembangkan tema secara mendalam—pendapat tiap penyiar, tanggapan ke rekan, pertanyaan ringan, contoh keseharian dekat dengan Sobat Muda, dan transisi natural; hindari pengulangan ide]';
@@ -1063,7 +1110,7 @@ INSTRUKSI EKSEKUSI SERVER:
 - ${dialogueGuide}
 - ${closingRuleInstruction}
 - PANGGILAN PENDENGAR WAJIB: Selalu gunakan "Sobat Muda". JANGAN PERNAH memakai kata "Sobat Siar" di script ini.
-- PRONOUN WAJIB: Gunakan "kita" (JANGAN PERNAH memakai kata "kami") saat menyebut penyiar bersama-sama atau pihak SIMFONI FM.
+- PRONOUN WAJIB: Gunakan "kita" (JANGAN PERNAH memakai kata "kami") saat menyebut penyiar bersama-sama atau pihak SIMFONI FM. Gunakan "aku"/"kamu" (DILARANG "lo"/"gue").
 - DURASI & KEDALAMAN WAJIB: Hitung jumlah kata per talk (110–130 kata per menit). Jangan pernah menulis talk yang jauh lebih pendek dari targetnya, tapi tetap jaga tiap giliran bicara pendek (1–3 kalimat) dan bermakna tanpa basa-basi berulang.
 - Jika ada referensi berita, jaga fakta tetap akurat tanpa mengarang angka atau kutipan.`;
 
@@ -1072,11 +1119,11 @@ INSTRUKSI EKSEKUSI SERVER:
       .map((seg, idx) => {
         const lines = speaker2
           ? [
-              `${speaker1}: ${idx === 0 ? 'Assalamualaikum warahmatullahi wabarakatuh, Sobat Muda! 107,7 SIMFONI FM The power hits station, dengerin lagu enak pilihanmu...' : 'Pembahasan mendalam sesuai tema...'}`,
+              `${speaker1}: ${idx === 0 ? 'Assalamualaikum warahmatullahi wabarakatuh, Sobat Muda! 107,7 SIMFONI FM The Power Hits Station, dengerin lagu enak pilihanmu...' : 'Pembahasan mendalam sesuai tema...'}`,
               `${speaker2}: Tanggapan langsung dan contoh nyata ${speaker2}...`,
             ]
           : [
-              `${speaker1}: ${idx === 0 ? 'Assalamualaikum warahmatullahi wabarakatuh, Sobat Muda! 107,7 SIMFONI FM The power hits station...' : 'Bahasan hangat untuk Sobat Muda...'}`,
+              `${speaker1}: ${idx === 0 ? 'Assalamualaikum warahmatullahi wabarakatuh, Sobat Muda! 107,7 SIMFONI FM The Power Hits Station, dengerin lagu enak pilihanmu...' : 'Bahasan hangat untuk Sobat Muda...'}`,
             ];
         return `===TALK ${idx + 1}: ${seg.title}===\n${lines.join('\n')}\n===END TALK===`;
       })
@@ -1159,14 +1206,18 @@ INSTRUKSI PENGEMBANGAN:
 - WAJIB memakai "Sobat Muda" (bukan "Sobat Siar") dan "kita" (bukan "kami").
 - Pastikan total kata setiap talk memenuhi rentang target barunya (${shortSegments.map((s) => `TALK ${s.index + 1}: ${s.segment.durationMinutes * 115}–${s.segment.durationMinutes * 130} kata`).join(', ')}).`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-4-hydrogen',
-      contents: expandPrompt,
-      config: {
-        systemInstruction,
-        abortSignal,
-      },
-    });
+    const response = await withGeminiRetry(
+      () =>
+        ai.models.generateContent({
+          model: GEMINI_MODEL,
+          contents: expandPrompt,
+          config: {
+            systemInstruction,
+            abortSignal,
+          },
+        }),
+      { featureLabel: 'AI Script', maxAttempts: 2, baseDelayMs: 1100, externalSignal: abortSignal }
+    );
 
     const expandedText = response.text || '';
     const lines = expandedText.replace(/\r\n/g, '\n').split('\n');
@@ -1325,7 +1376,7 @@ INSTRUKSI PENGEMBANGAN:
         fullText = '';
         try {
           const stream = await ai.models.generateContentStream({
-            model: 'gemini-4-hydrogen',
+            model: GEMINI_MODEL,
             contents: userPrompt,
             config: {
               systemInstruction,
@@ -1353,23 +1404,27 @@ INSTRUKSI PENGEMBANGAN:
               }
             }
           }
+
+          if (!fullText.trim()) {
+            throw Object.assign(new Error('Empty stream response from Gemini Script'), {
+              aiCode: 'EMPTY_RESPONSE',
+            });
+          }
           break;
         } catch (streamErr) {
           if (job.cancelled || timedOut) {
             throw streamErr;
           }
-          const errStatus =
-            typeof streamErr === 'object' && streamErr !== null && 'status' in streamErr
-              ? Number((streamErr as { status?: unknown }).status)
-              : 0;
+          const classifiedStream = classifyGeminiError(streamErr, 'AI Script');
           const shouldRetry =
             streamAttempt < maxStreamAttempts &&
-            (!fullText || errStatus === 429 || errStatus >= 500 || errStatus === 0);
+            classifiedStream.retryable &&
+            (!fullText || classifiedStream.code === 'QUOTA_EXCEEDED' || classifiedStream.code === 'NETWORK_ERROR' || classifiedStream.code === 'EMPTY_RESPONSE');
           if (!shouldRetry) {
             throw streamErr;
           }
           console.warn(
-            `AI Script stream attempt ${streamAttempt} failed (${errStatus || 'network'}), retrying...`
+            `[AI Script] Stream attempt ${streamAttempt} (${classifiedStream.code}) retrying in 1500ms...`
           );
           await new Promise((resolve) => setTimeout(resolve, 1500));
         }
@@ -1462,20 +1517,12 @@ INSTRUKSI PENGEMBANGAN:
         job.updatedAt = Date.now();
         return;
       }
-      const errStatus =
-        typeof error === 'object' && error !== null && 'status' in error
-          ? Number((error as { status?: unknown }).status)
-          : 0;
-      const errMessage = error instanceof Error ? error.message : String(error);
-      console.error('AI Script Job Error:', errStatus, errMessage);
+      const classified = classifyGeminiError(error, 'AI Script');
       job.status = 'failed';
       job.statusLabel = 'Gagal menyusun script';
       job.segments = [];
       job.completedCount = 0;
-      job.error =
-        errStatus === 429
-          ? 'Layanan AI lagi padat sementara. Tunggu sebentar lalu tekan Coba Lagi ya.'
-          : 'Terjadi gangguan saat menyusun naskah AI. Silakan tekan Coba Lagi beberapa saat lagi.';
+      job.error = classified.message;
       job.updatedAt = Date.now();
     } finally {
       if (timeoutHandle) {
